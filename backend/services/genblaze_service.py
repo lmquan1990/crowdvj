@@ -41,7 +41,7 @@ class GenblazeService:
 
         if not self.use_mock:
             self.provider = GMICloudImageProvider(api_key=self.gmi_key)
-            self.model_name = "flux2-dev"
+            self.model_name = "Flux2-Dev"
 
     def _get_s3_client(self):
         return boto3.client(
