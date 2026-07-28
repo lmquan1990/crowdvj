@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from genblaze_core.pipeline import Pipeline
 from genblaze_core.models.enums import Modality
-from genblaze_gmicloud import GmicloudImageProvider
+from genblaze_gmicloud import GMICloudImageProvider
 
 class GenerateRequest(BaseModel):
     prompt: str
@@ -35,7 +35,7 @@ class GenblazeService:
         self.gmi_key = os.getenv("GMICLOUD_API_KEY")
 
         if not self.use_mock:
-            self.provider = GmicloudImageProvider(api_key=self.gmi_key)
+            self.provider = GMICloudImageProvider(api_key=self.gmi_key)
             self.model_name = "Flux2-Dev"
 
     def _get_s3_client(self):
