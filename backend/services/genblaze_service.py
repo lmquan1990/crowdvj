@@ -27,7 +27,12 @@ class GenblazeService:
     def __init__(self, manager):
         self.manager = manager
         self.use_mock = os.getenv("USE_MOCK_GENBLAZE", "false").lower() == "true"
-        self.b2_endpoint = os.getenv("B2_ENDPOINT")
+        
+        b2_ep = os.getenv("B2_ENDPOINT")
+        if b2_ep and not b2_ep.startswith("http"):
+            b2_ep = f"https://{b2_ep}"
+        self.b2_endpoint = b2_ep
+        
         self.b2_bucket = os.getenv("B2_BUCKET")
         self.b2_key_id = os.getenv("B2_KEY_ID")
         self.b2_application_key = os.getenv("B2_APPLICATION_KEY")
