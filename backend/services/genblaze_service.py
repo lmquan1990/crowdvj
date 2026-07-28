@@ -11,7 +11,8 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 
 from genblaze_core.pipeline import Pipeline
-from genblaze_openai import DalleProvider
+from genblaze_core.models.enums import Modality
+from genblaze_gmicloud import GmicloudImageProvider
 
 class GenerateRequest(BaseModel):
     prompt: str
@@ -31,11 +32,11 @@ class GenblazeService:
         self.b2_key_id = os.getenv("B2_KEY_ID")
         self.b2_application_key = os.getenv("B2_APPLICATION_KEY")
         self.b2_public_cdn = os.getenv("B2_PUBLIC_CDN_URL")
-        self.openai_key = os.getenv("OPENAI_API_KEY")
+        self.gmi_key = os.getenv("GMICLOUD_API_KEY")
 
         if not self.use_mock:
-            self.provider = DalleProvider(api_key=self.openai_key)
-            self.model_name = "dall-e-3"
+            self.provider = GmicloudImageProvider(api_key=self.gmi_key)
+            self.model_name = "Flux2-Dev"
 
     def _get_s3_client(self):
         return boto3.client(
@@ -124,7 +125,13 @@ class GenblazeService:
             )
         else:
             pipeline = Pipeline("crowdvj-generate")
-            pipeline.step(self.provider, model=self.model_name, prompt=request.prompt)
+            pipeline.step(
+                self.provider, 
+                model=self.model_name, 
+                prompt=request.prompt,
+                modality=Modality.IMAGE,
+                num_candidates=2
+            )
             
             pipeline_result = await pipeline.arun()
             latency = time.time() - start_time
@@ -178,7 +185,7 @@ class GenblazeService:
             provenance = {
                 "prompt": request.prompt,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "provider": "openai",
+                "provider": "gmicloud",
                 "model": self.model_name,
                 "latency": latency,
                 "hashes": hashes
@@ -190,7 +197,7 @@ class GenblazeService:
             response = GenerateResponse(
                 sceneId=scene_id,
                 imageUrl=winner_url,
-                provider="openai",
+                provider="gmicloud",
                 latency=latency
             )
             
