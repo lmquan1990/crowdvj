@@ -10,6 +10,7 @@ app = FastAPI(title="CrowdVJ Backend")
 
 origins = [
     "http://localhost:3000",
+    "https://crowdvj.vercel.app",
 ]
 
 app.add_middleware(
