@@ -18,7 +18,7 @@ The system consists of three main components:
 graph TD
     subgraph "External Services"
         YTChat[YouTube Live Chat API]
-        OpenAI[OpenAI / DALL-E 3]
+        OpenAI[GMI Cloud / FLUX-schnell]
         B2[(Backblaze B2 Storage)]
     end
 
