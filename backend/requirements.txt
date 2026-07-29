@@ -7,3 +7,4 @@ genblaze-s3
 genblaze-google
 boto3
 python-dotenv
+httpx
