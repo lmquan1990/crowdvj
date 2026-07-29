@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from genblaze_core.pipeline import Pipeline
 from genblaze_core.models.enums import Modality
-from genblaze_google import GoogleImageProvider
+from genblaze_google import ImagenProvider
 from genblaze_s3 import S3StorageBackend
 from genblaze_core.providers.base import BaseProvider
 from genblaze_core.models.step import Step
@@ -95,7 +95,7 @@ class GenblazeService:
         )
 
         if not self.use_mock:
-            self.provider = GoogleImageProvider(api_key=self.gmi_key)
+            self.provider = ImagenProvider(api_key=self.gmi_key)
             self.model_name = "imagen-3.0-generate-002"
 
     def _get_s3_client(self):
