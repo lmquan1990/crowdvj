@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from genblaze_core.pipeline import Pipeline
 from genblaze_core.models.enums import Modality
 from genblaze_google import GoogleImageProvider
+from genblaze_s3 import S3StorageBackend
 
 B2_PUBLIC_BASE = f"{os.getenv('B2_ENDPOINT')}/file/{os.getenv('B2_BUCKET')}/tracks"
 
@@ -62,17 +63,20 @@ class GenblazeService:
         self.b2_public_cdn = os.getenv("B2_PUBLIC_CDN_URL")
         self.gmi_key = os.getenv("GEMINI_API_KEY") # We use GEMINI_API_KEY mapped to this property
 
+        self.s3_sink = S3StorageBackend(
+            bucket=self.b2_bucket,
+            endpoint_url=self.b2_endpoint,
+            aws_access_key_id=self.b2_key_id,
+            aws_secret_access_key=self.b2_application_key,
+            public_url_base=self.b2_public_cdn
+        )
+
         if not self.use_mock:
             self.provider = GoogleImageProvider(api_key=self.gmi_key)
             self.model_name = "imagen-3.0-generate-002"
 
     def _get_s3_client(self):
-        return boto3.client(
-            's3',
-            endpoint_url=self.b2_endpoint,
-            aws_access_key_id=self.b2_key_id,
-            aws_secret_access_key=self.b2_application_key,
-        )
+        return self.s3_sink._client
             
     async def upload_to_b2(self, file_bytes: bytes, key: str, content_type: str) -> str:
         def do_upload():
@@ -106,9 +110,12 @@ class GenblazeService:
             target_prefix = None
             for page in paginator.paginate(Bucket=self.b2_bucket, Prefix="sessions/"):
                 for obj in page.get('Contents', []):
-                    if f"/scene-{scene_id}/" in obj['Key']:
-                        parts = obj['Key'].split('/')
-                        target_prefix = f"sessions/{parts[1]}/scene-{scene_id}/"
+                    # Support both old path format (/scene-{scene_id}/) and Genblaze path format (/{scene_id}/)
+                    if f"/scene-{scene_id}/" in obj['Key'] or f"/{scene_id}/" in obj['Key']:
+                        # Determine which separator was matched
+                        sep = f"/scene-{scene_id}/" if f"/scene-{scene_id}/" in obj['Key'] else f"/{scene_id}/"
+                        parts = obj['Key'].split(sep)
+                        target_prefix = f"{parts[0]}{sep}"
                         break
                 if target_prefix:
                     break
@@ -120,8 +127,17 @@ class GenblazeService:
             try:
                 meta_obj = s3.get_object(Bucket=self.b2_bucket, Key=f"{target_prefix}metadata.json")
                 result['metadata'] = json.loads(meta_obj['Body'].read().decode('utf-8'))
+            except Exception:
+                pass
                 
-                prov_obj = s3.get_object(Bucket=self.b2_bucket, Key=f"{target_prefix}provenance.json")
+            try:
+                # Try getting old provenance.json or new manifest.json
+                prov_key = f"{target_prefix}provenance.json"
+                try:
+                    prov_obj = s3.get_object(Bucket=self.b2_bucket, Key=prov_key)
+                except Exception:
+                    prov_key = f"{target_prefix}manifest.json"
+                    prov_obj = s3.get_object(Bucket=self.b2_bucket, Key=prov_key)
                 result['provenance'] = json.loads(prov_obj['Body'].read().decode('utf-8'))
             except Exception:
                 pass
@@ -153,79 +169,30 @@ class GenblazeService:
                 latency=latency
             )
         else:
-            pipeline = Pipeline("crowdvj-generate")
+            # We use sessions/session_id as tenant_id so Genblaze puts files under sessions/session_id/run_id/
+            pipeline = Pipeline("crowdvj-generate", tenant_id=f"sessions/{session_id}")
             pipeline.step(
                 self.provider, 
                 model=self.model_name, 
                 prompt=request.prompt,
                 modality=Modality.IMAGE,
-                num_candidates=1 # Google typically handles 1 well, but we can set up to max 1-4 depending on the API. Using 1 for simplicity based on user snippet.
+                num_candidates=1
             )
             
-            pipeline_result = await pipeline.arun()
+            pipeline_result = await pipeline.arun(sink=self.s3_sink)
             latency = time.time() - start_time
             
             steps = pipeline_result.run.steps
             if not steps or not steps[0].assets:
                 raise HTTPException(status_code=500, detail="Generation failed or returned no assets.")
             
-            all_assets = steps[0].assets
-            winner_asset = all_assets[0]
-            
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(winner_asset.url)
-                resp.raise_for_status()
-                winner_bytes = resp.content
-            
-            winner_hash = hashlib.sha256(winner_bytes).hexdigest()
-            content_type = getattr(winner_asset, 'media_type', "image/webp") or "image/webp"
-            ext = content_type.split('/')[-1] if '/' in content_type else "webp"
-            if ext == "jpeg": ext = "jpg"
-            
-            winner_key = f"sessions/{session_id}/scene-{scene_id}/winner.{ext}"
-            winner_url = await self.upload_to_b2(winner_bytes, winner_key, content_type)
-            
-            hashes = {winner_key: winner_hash}
-            
-            candidates = all_assets[1:]
-            for i, cand in enumerate(candidates):
-                async with httpx.AsyncClient() as client:
-                    c_resp = await client.get(cand.url)
-                    c_resp.raise_for_status()
-                    c_bytes = c_resp.content
-                    c_hash = hashlib.sha256(c_bytes).hexdigest()
-                    c_ct = getattr(cand, 'media_type', "image/webp") or "image/webp"
-                    c_ext = c_ct.split('/')[-1] if '/' in c_ct else "webp"
-                    if c_ext == "jpeg": c_ext = "jpg"
-                    
-                    c_key = f"sessions/{session_id}/scene-{scene_id}/candidates/cand_{i}.{c_ext}"
-                    await self.upload_to_b2(c_bytes, c_key, c_ct)
-                    hashes[c_key] = c_hash
-            
-            metadata = {
-                "run_id": pipeline_result.run.run_id,
-                "manifest_hash": getattr(pipeline_result.manifest, 'canonical_hash', None)
-            }
-            meta_bytes = json.dumps(metadata).encode('utf-8')
-            meta_key = f"sessions/{session_id}/scene-{scene_id}/metadata.json"
-            await self.upload_to_b2(meta_bytes, meta_key, "application/json")
-            hashes[meta_key] = hashlib.sha256(meta_bytes).hexdigest()
-            
-            provenance = {
-                "prompt": request.prompt,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "provider": "gmicloud",
-                "model": self.model_name,
-                "latency": latency,
-                "hashes": hashes
-            }
-            prov_bytes = json.dumps(provenance).encode('utf-8')
-            prov_key = f"sessions/{session_id}/scene-{scene_id}/provenance.json"
-            await self.upload_to_b2(prov_bytes, prov_key, "application/json")
+            # The run_id is the unique scene_id generated by Genblaze
+            scene_id = pipeline_result.run.run_id
+            winner_asset = steps[0].assets[0]
             
             response = GenerateResponse(
                 sceneId=scene_id,
-                imageUrl=winner_url,
+                imageUrl=winner_asset.url,
                 audioUrl=match_audio_from_prompt(request.prompt),
                 provider="google",
                 latency=latency
