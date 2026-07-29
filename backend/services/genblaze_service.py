@@ -12,7 +12,29 @@ from pydantic import BaseModel
 
 from genblaze_core.pipeline import Pipeline
 from genblaze_core.models.enums import Modality
-from genblaze_gmicloud import GMICloudImageProvider
+from genblaze_google import GoogleImageProvider
+
+B2_PUBLIC_BASE = f"{os.getenv('B2_ENDPOINT')}/file/{os.getenv('B2_BUCKET')}/tracks"
+
+AUDIO_LIBRARY = {
+    "cyberpunk": f"{B2_PUBLIC_BASE}/cyberpunk-synthwave.mp3",
+    "neon": f"{B2_PUBLIC_BASE}/cyberpunk-synthwave.mp3",
+    "lofi": f"{B2_PUBLIC_BASE}/lofi-chill-hop.mp3",
+    "coffee": f"{B2_PUBLIC_BASE}/lofi-chill-hop.mp3",
+    "space": f"{B2_PUBLIC_BASE}/space-ambient-techno.mp3",
+    "station": f"{B2_PUBLIC_BASE}/space-ambient-techno.mp3",
+    "underwater": f"{B2_PUBLIC_BASE}/underwater-deep-house.mp3",
+    "ocean": f"{B2_PUBLIC_BASE}/underwater-deep-house.mp3",
+    "default": f"{B2_PUBLIC_BASE}/cyberpunk-synthwave.mp3"
+}
+
+def match_audio_from_prompt(prompt: str) -> str:
+    """Khớp nhạc theo từ khóa trong Prompt"""
+    prompt_lower = prompt.lower()
+    for keyword, audio_url in AUDIO_LIBRARY.items():
+        if keyword in prompt_lower:
+            return audio_url
+    return AUDIO_LIBRARY["default"]
 
 class GenerateRequest(BaseModel):
     prompt: str
@@ -20,6 +42,7 @@ class GenerateRequest(BaseModel):
 class GenerateResponse(BaseModel):
     sceneId: str
     imageUrl: str
+    audioUrl: str
     provider: str
     latency: float
 
@@ -37,11 +60,11 @@ class GenblazeService:
         self.b2_key_id = os.getenv("B2_KEY_ID")
         self.b2_application_key = os.getenv("B2_APPLICATION_KEY")
         self.b2_public_cdn = os.getenv("B2_PUBLIC_CDN_URL")
-        self.gmi_key = os.getenv("GMICLOUD_API_KEY")
+        self.gmi_key = os.getenv("GEMINI_API_KEY") # We use GEMINI_API_KEY mapped to this property
 
         if not self.use_mock:
-            self.provider = GMICloudImageProvider(api_key=self.gmi_key)
-            self.model_name = "Flux2-Dev"
+            self.provider = GoogleImageProvider(api_key=self.gmi_key)
+            self.model_name = "imagen-3.0-generate-002"
 
     def _get_s3_client(self):
         return boto3.client(
@@ -125,6 +148,7 @@ class GenblazeService:
             response = GenerateResponse(
                 sceneId=scene_id,
                 imageUrl=image_url,
+                audioUrl=match_audio_from_prompt(request.prompt),
                 provider=provider,
                 latency=latency
             )
@@ -135,7 +159,7 @@ class GenblazeService:
                 model=self.model_name, 
                 prompt=request.prompt,
                 modality=Modality.IMAGE,
-                num_candidates=2
+                num_candidates=1 # Google typically handles 1 well, but we can set up to max 1-4 depending on the API. Using 1 for simplicity based on user snippet.
             )
             
             pipeline_result = await pipeline.arun()
@@ -202,7 +226,8 @@ class GenblazeService:
             response = GenerateResponse(
                 sceneId=scene_id,
                 imageUrl=winner_url,
-                provider="gmicloud",
+                audioUrl=match_audio_from_prompt(request.prompt),
+                provider="google",
                 latency=latency
             )
             
@@ -210,7 +235,9 @@ class GenblazeService:
             "type": "scene_created",
             "data": {
                 "sceneId": response.sceneId,
+                "sessionId": session_id,
                 "imageUrl": response.imageUrl,
+                "audioUrl": response.audioUrl,
                 "prompt": request.prompt,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
