@@ -16,7 +16,7 @@ from google.genai import types
 B2_PUBLIC_BASE = f"{os.getenv('B2_ENDPOINT')}/file/{os.getenv('B2_BUCKET')}/tracks"
 
 # Fixed model: verified working with this API key
-GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
+GEMINI_IMAGE_MODEL = "imagen-4.0-fast-generate-001"
 
 AUDIO_LIBRARY = {
     "cyberpunk": f"{B2_PUBLIC_BASE}/cyberpunk-synthwave.mp3",

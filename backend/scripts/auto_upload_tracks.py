@@ -18,10 +18,10 @@ B2_APPLICATION_KEY = os.getenv("B2_APPLICATION_KEY")
 # Danh sách các link nhạc Royalty-Free (Miễn phí bản quyền) để tải về
 # Đây là các link direct demo. Trong thực tế, bạn có thể thay bằng file cục bộ hoặc link khác.
 TRACKS = {
-    "cyberpunk-synthwave.mp3": "https://cdn.pixabay.com/download/audio/2022/10/25/audio_279fa1e2cd.mp3",
-    "lofi-chill-hop.mp3": "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf7ee.mp3",
-    "space-ambient-techno.mp3": "https://cdn.pixabay.com/download/audio/2021/11/25/audio_91b3cb3922.mp3",
-    "underwater-deep-house.mp3": "https://cdn.pixabay.com/download/audio/2022/03/10/audio_c8c8a73467.mp3",
+    "cyberpunk-synthwave.mp3": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+    "lofi-chill-hop.mp3": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
+    "space-ambient-techno.mp3": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
+    "underwater-deep-house.mp3": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3",
 }
 
 def get_s3_client():
@@ -34,7 +34,10 @@ def get_s3_client():
 
 async def download_and_upload(filename: str, url: str):
     print(f"[{filename}] Downloading from {url} ...")
-    async with httpx.AsyncClient(follow_redirects=True) as client:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    async with httpx.AsyncClient(follow_redirects=True, headers=headers) as client:
         response = await client.get(url)
         response.raise_for_status()
         audio_data = response.content
