@@ -1,8 +1,29 @@
 import os
+import json
+import tempfile
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
-import json
+
+# ---------------------------------------------------------------------------
+# GCP Service Account credentials bootstrap (for Render / non-GCP hosts)
+# ---------------------------------------------------------------------------
+# On GCP (Cloud Run, GKE, etc.) ADC is provided automatically.
+# On Render we store the service account JSON in GOOGLE_APPLICATION_CREDENTIALS_JSON
+# and write it to a temp file so the google-auth library can find it.
+_gac_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+if _gac_json and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+    try:
+        _tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, prefix="gcp_sa_"
+        )
+        _tmp.write(_gac_json)
+        _tmp.close()
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = _tmp.name
+        print(f"[GCP] Loaded service account credentials from env → {_tmp.name}")
+    except Exception as _e:
+        print(f"[GCP] WARNING: Failed to write service account JSON: {_e}")
+# ---------------------------------------------------------------------------
 
 from routers import api
 
