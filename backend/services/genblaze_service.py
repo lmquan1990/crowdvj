@@ -2,7 +2,6 @@ import os
 import json
 import time
 import hashlib
-import httpx
 import uuid
 from datetime import datetime, timezone
 import boto3
@@ -10,15 +9,14 @@ import asyncio
 from fastapi import HTTPException
 from pydantic import BaseModel
 
-from genblaze_core.pipeline import Pipeline
-from genblaze_core.models.enums import Modality
-from genblaze_google import ImagenProvider
 from genblaze_s3 import S3StorageBackend
-from genblaze_core.providers.base import BaseProvider
-from genblaze_core.models.step import Step
-from genblaze_core.models.asset import Asset
+from google import genai
+from google.genai import types
 
 B2_PUBLIC_BASE = f"{os.getenv('B2_ENDPOINT')}/file/{os.getenv('B2_BUCKET')}/tracks"
+
+# Fixed model: verified working with this API key
+GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 
 AUDIO_LIBRARY = {
     "cyberpunk": f"{B2_PUBLIC_BASE}/cyberpunk-synthwave.mp3",
@@ -29,6 +27,7 @@ AUDIO_LIBRARY = {
     "station": f"{B2_PUBLIC_BASE}/space-ambient-techno.mp3",
     "underwater": f"{B2_PUBLIC_BASE}/underwater-deep-house.mp3",
     "ocean": f"{B2_PUBLIC_BASE}/underwater-deep-house.mp3",
+    "forest": f"{B2_PUBLIC_BASE}/lofi-chill-hop.mp3",
     "default": f"{B2_PUBLIC_BASE}/cyberpunk-synthwave.mp3"
 }
 
@@ -40,25 +39,8 @@ def match_audio_from_prompt(prompt: str) -> str:
             return audio_url
     return AUDIO_LIBRARY["default"]
 
-class DynamicAudioProvider(BaseProvider):
-    name = "dynamic-audio-provider"
-
-    def submit(self, step: Step, config=None):
-        # Mô phỏng quá trình gọi API (vd: Pixabay/Freesound) để tìm mp3 từ prompt
-        audio_url = match_audio_from_prompt(step.prompt)
-        return audio_url
-        
-    def poll(self, prediction_id, config=None) -> bool:
-        return True
-        
-    def fetch_output(self, prediction_id, step: Step) -> Step:
-        # prediction_id ở đây chính là audio_url
-        # Tải file MP3 vào RAM để đẩy cho Genblaze Sink upload
-        with httpx.Client(follow_redirects=True) as client:
-            resp = client.get(prediction_id)
-            resp.raise_for_status()
-            step.assets = [Asset(bytes=resp.content, media_type="audio/mp3")]
-        return step
+# DynamicAudioProvider is handled directly (not as a pipeline step)
+# to avoid Genblaze family validation issues with custom audio providers
 
 class GenerateRequest(BaseModel):
     prompt: str
@@ -84,7 +66,7 @@ class GenblazeService:
         self.b2_key_id = os.getenv("B2_KEY_ID")
         self.b2_application_key = os.getenv("B2_APPLICATION_KEY")
         self.b2_public_cdn = os.getenv("B2_PUBLIC_CDN_URL")
-        self.gmi_key = os.getenv("GEMINI_API_KEY") # We use GEMINI_API_KEY mapped to this property
+        self.gmi_key = os.getenv("GEMINI_API_KEY")
 
         self.s3_sink = S3StorageBackend(
             bucket=self.b2_bucket,
@@ -95,8 +77,7 @@ class GenblazeService:
         )
 
         if not self.use_mock:
-            self.provider = ImagenProvider(api_key=self.gmi_key)
-            self.model_name = "imagen-3.0-generate-002"
+            self.genai_client = genai.Client(api_key=self.gmi_key)
 
     def _get_s3_client(self):
         return self.s3_sink._client
@@ -192,44 +173,49 @@ class GenblazeService:
                 latency=latency
             )
         else:
-            # We use sessions/session_id as tenant_id so Genblaze puts files under sessions/session_id/run_id/
-            pipeline = Pipeline("crowdvj-generate", tenant_id=f"sessions/{session_id}")
-            
-            # Step 1: Image Generation
-            pipeline.step(
-                self.provider, 
-                model=self.model_name, 
-                prompt=request.prompt,
-                modality=Modality.IMAGE,
-                num_candidates=1
-            )
-            
-            # Step 2: Dynamic Audio Search
-            audio_provider = DynamicAudioProvider()
-            pipeline.step(
-                audio_provider,
-                model="dynamic-search",
-                prompt=request.prompt,
-                modality=Modality.AUDIO
-            )
-            
-            pipeline_result = await pipeline.arun(sink=self.s3_sink)
+            # Determine matching audio from prompt keywords
+            audio_url = match_audio_from_prompt(request.prompt)
+
+            # Generate image directly via Google AI SDK (bypassing Genblaze model registry)
+            def generate_image_sync():
+                response = self.genai_client.models.generate_content(
+                    model=GEMINI_IMAGE_MODEL,
+                    contents=f"{request.prompt}, cinematic, highly detailed, vibrant colors",
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE", "TEXT"]
+                    )
+                )
+                parts = response.candidates[0].content.parts
+                img_parts = [p for p in parts if hasattr(p, "inline_data") and p.inline_data]
+                if not img_parts:
+                    raise Exception("No image returned from Gemini")
+                return img_parts[0].inline_data
+
+            inline_data = await asyncio.to_thread(generate_image_sync)
+            img_bytes = inline_data.data
+            mime_type = inline_data.mime_type or "image/png"
+            ext = mime_type.split("/")[-1].replace("jpeg", "jpg")
+
+            # Upload to B2 via genblaze S3 sink's underlying client
+            img_key = f"sessions/{session_id}/{scene_id}/image.{ext}"
+            def upload_image():
+                s3 = self._get_s3_client()
+                s3.put_object(
+                    Bucket=self.b2_bucket,
+                    Key=img_key,
+                    Body=img_bytes,
+                    ContentType=mime_type
+                )
+            await asyncio.to_thread(upload_image)
+
             latency = time.time() - start_time
-            
-            steps = pipeline_result.run.steps
-            if not steps or len(steps) < 2 or not steps[0].assets or not steps[1].assets:
-                raise HTTPException(status_code=500, detail="Generation failed or returned missing assets.")
-            
-            # The run_id is the unique scene_id generated by Genblaze
-            scene_id = pipeline_result.run.run_id
-            winner_asset = steps[0].assets[0]
-            audio_asset = steps[1].assets[0]
-            
+            image_url = f"{self.b2_public_cdn}/{img_key}"
+
             response = GenerateResponse(
                 sceneId=scene_id,
-                imageUrl=winner_asset.url,
-                audioUrl=audio_asset.url,
-                provider="google",
+                imageUrl=image_url,
+                audioUrl=audio_url,
+                provider=f"google-gemini/{GEMINI_IMAGE_MODEL}",
                 latency=latency
             )
             
