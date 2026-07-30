@@ -244,7 +244,16 @@ class GenblazeService:
                 import asyncio as _asyncio
 
                 pipeline = (
-                    Pipeline(f"crowdvj-{scene_id}")
+                    Pipeline(
+                        f"crowdvj-{scene_id}",
+                        # preflight=False: skip the upstream model-catalog probe.
+                        # The probe calls client.models.get() against the AI Studio
+                        # endpoint, which returns NOT_FOUND for gemini-2.5-flash-image
+                        # when credentials are Vertex AI-only (no fallback key).
+                        # The model is valid on GCP Agent Platform; any real errors
+                        # (auth, region, quota) will surface from generate() itself.
+                        preflight=False,
+                    )
                     .step(
                         provider,
                         model=GEMINI_IMAGE_MODEL,
